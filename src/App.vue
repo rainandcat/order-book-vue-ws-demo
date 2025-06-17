@@ -3,7 +3,7 @@ import OrderBook from "./components/OrderBook.vue";
 </script>
 
 <template>
-  <main class="min-h-screen bg-deep flex justify-center">
+  <main class="bg-deep flex justify-center">
     <OrderBook />
   </main>
 </template>
