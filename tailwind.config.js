@@ -15,16 +15,17 @@ module.exports = {
         hover: '#1E3059',
         buyBar: 'rgba(16, 186, 104, 0.12)',
         sellBar: 'rgba(255, 90, 90, 0.12)',
+        grayBar: 'rgba(134, 152, 170, 0.12)',
         flashGreen: 'rgba(0, 177, 93, 0.5)',
         flashRed: 'rgba(255, 91, 90, 0.5)',
       },
       keyframes: {
         'flash-red': {
-          '0%':  { backgroundColor: 'rgba(239, 68, 68, 0.5)' },
+          '0%':  { backgroundColor: 'rgba(255, 91, 90, 0.5)' },
           '100%':{ backgroundColor: 'transparent' },
         },
         'flash-green': {
-          '0%':  { backgroundColor: 'rgba(34, 197, 94, 0.5)' },
+          '0%':  { backgroundColor: 'rgba(0, 177, 93, 0.5)' },
           '100%':{ backgroundColor: 'transparent' },
         },
       },

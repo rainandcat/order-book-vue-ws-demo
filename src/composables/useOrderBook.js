@@ -1,10 +1,44 @@
+/**
+ * @typedef {Object} Quote
+ * @property {number} price - Quote price
+ * @property {number} size - Quote size
+ */
+
+/**
+ * @typedef {Object} QuoteVM
+ * @property {number} price
+ * @property {number} size
+ * @property {number} total
+ * @property {number} percent
+ * @property {boolean} isNew
+ * @property {boolean} isChanged
+ * @property {'increase' | 'decrease' | null} sizeChange
+ */
+
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { throttle } from 'lodash';
+import { getOrderTopic, getTradeTopic } from '@/utils/wsTopics.js';
 
-export function useOrderBook() {
+import {
+  ORDER_BOOK_DEPTH,
+  MAX_RAW_QUOTES,
+  ORDER_UPDATE_THROTTLE_MS,
+  MAX_RECONNECT_ATTEMPTS,
+  BASE_RECONNECT_DELAY,
+} from '@/constants/orderBook.js';
+
+export function useOrderBook(options = {}) {
+  const symbol = options.symbol || 'BTCPFC';
+  const orderTopic = getOrderTopic(symbol);
+  const tradeTopic = getTradeTopic(symbol);
+
+  /** @type {import('vue').Ref<QuoteVM[]>} */
   const sellQuotes = ref([]);
+  /** @type {import('vue').Ref<QuoteVM[]>} */
   const buyQuotes = ref([]);
+  /** @type {import('vue').Ref<number>} */
   const lastPrice = ref(0);
+  /** @type {import('vue').Ref<number>} */
   const previousLastPrice = ref(0);
 
   let orderSocket = null;
@@ -13,6 +47,10 @@ export function useOrderBook() {
   let rawSell = [];
   let rawBuy = [];
   let updateFrame = null;
+  let reconnectAttempts = 0;
+
+  const orderWsUrl = import.meta.env.VITE_ORDER_WS_URL;
+  const tradeWsUrl = import.meta.env.VITE_TRADE_WS_URL;
 
   const throttledUpdate = throttle(() => {
     const nextSell = buildSide(sellQuotes.value, rawSell, false);
@@ -20,7 +58,7 @@ export function useOrderBook() {
     sellQuotes.value = applyDiff(sellQuotes.value, nextSell);
     buyQuotes.value = applyDiff(buyQuotes.value, nextBuy);
     updateFrame = null;
-  }, 500);
+  }, ORDER_UPDATE_THROTTLE_MS);
 
   const scheduleUpdate = () => {
     if (updateFrame) return;
@@ -29,15 +67,23 @@ export function useOrderBook() {
 
   const normalizeSide = (sideArr) => {
     if (!Array.isArray(sideArr)) return [];
-    return sideArr.map(([p, s]) => [Number(p), Number(s)]);
+    return sideArr
+      .filter(([p, s]) => typeof p === 'string' && typeof s === 'string' && !isNaN(p) && !isNaN(s))
+      .map(([p, s]) => [Number(p), Number(s)]);
   };
 
+  /**
+   * @param {QuoteVM[]} prev
+   * @param {[number, number][]} raw
+   * @param {boolean} isBuy
+   * @returns {QuoteVM[]}
+   */
   const buildSide = (prev, raw, isBuy) => {
     const filtered = [...raw].filter(([, size]) => size > 0);
     const sorted = filtered.sort((a, b) => (isBuy ? b[0] - a[0] : a[0] - b[0]));
     const fullTotalSize = sorted.reduce((sum, [, size]) => sum + size, 0);
-    const padded = sorted.slice(0, 8);
-    while (padded.length < 8) padded.push([0, 0]);
+    const padded = sorted.slice(0, ORDER_BOOK_DEPTH);
+    while (padded.length < ORDER_BOOK_DEPTH) padded.push([0, 0]);
 
     const totalSize = padded.reduce((sum, [, size]) => sum + size, 0);
     let running = 0;
@@ -77,41 +123,62 @@ export function useOrderBook() {
       if (s === 0) map.delete(p);
       else map.set(p, s);
     }
-    return Array.from(map.entries()).sort((a, b) => (isBuy ? b[0] - a[0] : a[0] - b[0]));
+    return Array.from(map.entries()).sort((isBuy ? (a, b) => b[0] - a[0] : (a, b) => a[0] - b[0]));
+  };
+
+  const cleanupRawData = () => {
+    rawSell = rawSell.filter(([price, size]) => size > 0 && price > 0).slice(0, MAX_RAW_QUOTES);
+    rawBuy = rawBuy.filter(([price, size]) => size > 0 && price > 0).slice(0, MAX_RAW_QUOTES);
   };
 
   const connectOrderWS = () => {
-    orderSocket = new WebSocket('wss://ws.btse.com/ws/oss/futures');
+    if (!orderWsUrl) throw new Error('VITE_ORDER_WS_URL not defined');
+    orderSocket = new WebSocket(orderWsUrl);
 
     orderSocket.addEventListener('open', () => {
-      orderSocket.send(JSON.stringify({ op: 'subscribe', args: ['update:BTCPFC'] }));
+      reconnectAttempts = 0;
+      orderSocket.send(JSON.stringify({ op: 'subscribe', args: [orderTopic] }));
     });
 
     orderSocket.addEventListener('message', (evt) => {
-      const msg = JSON.parse(evt.data || '{}');
-      if (msg.topic !== 'update:BTCPFC') return;
+      try {
+        const msg = JSON.parse(evt.data || '{}');
+        if (msg.topic !== orderTopic) return;
 
-      const payload = msg.data;
-      if (!payload) return;
+        const payload = msg.data;
+        if (!payload) return;
 
-      if (payload.type === 'snapshot') {
-        lastSeq = payload.seqNum;
-        const asks = normalizeSide(payload?.asks || []);
-        const bids = normalizeSide(payload?.bids || []);
-        rawSell = asks;
-        rawBuy = bids;
-        scheduleUpdate();
-      } else if (payload.type === 'delta') {
-        if (payload.prevSeqNum !== lastSeq) {
-          reconnectOrderWS();
-          return;
+        if (payload.type === 'snapshot') {
+          lastSeq = payload.seqNum;
+          rawSell = normalizeSide(payload?.asks || []);
+          rawBuy = normalizeSide(payload?.bids || []);
+          cleanupRawData();
+          scheduleUpdate();
+        } else if (payload.type === 'delta') {
+          if (payload.prevSeqNum !== lastSeq) {
+            reconnectOrderWS();
+            return;
+          }
+          lastSeq = payload.seqNum;
+          rawSell = mergeDeltas(rawSell, normalizeSide(payload?.asks || []), false);
+          rawBuy = mergeDeltas(rawBuy, normalizeSide(payload?.bids || []), true);
+          cleanupRawData();
+          scheduleUpdate();
         }
-        lastSeq = payload.seqNum;
-        const asks = normalizeSide(payload?.asks || []);
-        const bids = normalizeSide(payload?.bids || []);
-        rawSell = mergeDeltas(rawSell, asks, false);
-        rawBuy = mergeDeltas(rawBuy, bids, true);
-        scheduleUpdate();
+      } catch (e) {
+        console.error('Order WS error:', e);
+        reconnectOrderWS();
+      }
+    });
+
+    orderSocket.addEventListener('error', () => {
+      reconnectOrderWS();
+    });
+
+    orderSocket.addEventListener('close', () => {
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        setTimeout(connectOrderWS, BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts));
+        reconnectAttempts++;
       }
     });
   };
@@ -122,20 +189,43 @@ export function useOrderBook() {
   };
 
   const connectTradeWS = () => {
-    tradeSocket = new WebSocket('wss://ws.btse.com/ws/futures');
+    if (!tradeWsUrl) throw new Error('VITE_TRADE_WS_URL not defined');
+    tradeSocket = new WebSocket(tradeWsUrl);
 
     tradeSocket.addEventListener('open', () => {
-      tradeSocket.send(JSON.stringify({ op: 'subscribe', args: ['tradeHistoryApi:BTCPFC'] }));
+      reconnectAttempts = 0;
+      tradeSocket.send(JSON.stringify({ op: 'subscribe', args: [tradeTopic] }));
     });
 
     tradeSocket.addEventListener('message', (evt) => {
-      const msg = JSON.parse(evt.data || '{}');
-      if (msg.topic !== 'tradeHistoryApi') return;
-      const price = Number(msg.data?.[0]?.price);
-      if (!price) return;
-      previousLastPrice.value = lastPrice.value;
-      lastPrice.value = price;
+      try {
+        const msg = JSON.parse(evt.data || '{}');
+        if (msg.topic !== 'tradeHistoryApi') return;
+        const price = Number(msg.data?.[0]?.price);
+        if (!price) return;
+        previousLastPrice.value = lastPrice.value;
+        lastPrice.value = price;
+      } catch (e) {
+        console.error('Trade WS error:', e);
+        reconnectTradeWS();
+      }
     });
+
+    tradeSocket.addEventListener('error', () => {
+      reconnectTradeWS();
+    });
+
+    tradeSocket.addEventListener('close', () => {
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        setTimeout(connectTradeWS, BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts));
+        reconnectAttempts++;
+      }
+    });
+  };
+
+  const reconnectTradeWS = () => {
+    if (tradeSocket) tradeSocket.close();
+    connectTradeWS();
   };
 
   onMounted(() => {

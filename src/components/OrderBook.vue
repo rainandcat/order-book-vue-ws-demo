@@ -3,7 +3,18 @@ import { ref, computed, watch, nextTick } from "vue";
 import { useOrderBook } from "@/composables/useOrderBook";
 import IconArrowDown from "@/assets/IconArrowDown.svg?component";
 
-const { sellQuotes, buyQuotes, lastPrice, previousLastPrice } = useOrderBook();
+import { FLASH_DURATION_MS } from "@/constants/orderBook.js";
+
+const props = defineProps({
+  symbol: {
+    type: String,
+    required: true,
+  },
+});
+
+const { sellQuotes, buyQuotes, lastPrice, previousLastPrice } = useOrderBook({
+  symbol: props.symbol,
+});
 const hoveredRow = ref(null);
 
 const lastPriceClass = computed(() => {
@@ -11,7 +22,7 @@ const lastPriceClass = computed(() => {
     return ["text-buy", "bg-buyBar"];
   if (lastPrice.value < previousLastPrice.value)
     return ["text-sell", "bg-sellBar"];
-  return ["text-textMain", "bg-gray-500/10"];
+  return ["text-textMain", "bg-grayBar"];
 });
 const isPriceUp = computed(() => lastPrice.value > previousLastPrice.value);
 const isPriceDown = computed(() => lastPrice.value < previousLastPrice.value);
@@ -25,44 +36,45 @@ const formatPrice = (p) =>
 const formatNumber = (n) => n.toLocaleString();
 
 const sizeCellClass = (q) => {
-  if (q.sizeChange === "increase") return "bg-flashGreen/50 text-right";
-  if (q.sizeChange === "decrease") return "bg-flashRed/50 text-right";
+  if (q.sizeChange === "increase") return "animate-flash-green text-right";
+  if (q.sizeChange === "decrease") return "animate-flash-red text-right";
   return "text-right";
 };
-
+/**
+ * @param {QuoteVM} quote
+ * @param {'red' | 'green'} color
+ */
 function flashRow(quote, color) {
   quote.flashColor = color;
   nextTick(() =>
     setTimeout(() => {
       quote.flashColor = null;
-    }, 1500)
+    }, FLASH_DURATION_MS)
   );
 }
 
 watch(
-  sellQuotes,
+  () => sellQuotes.value.map((q) => ({ isNew: q.isNew, price: q.price })),
   (list) => {
-    list.forEach((q) => {
+    list.forEach((q, i) => {
       if (q.isNew) {
-        flashRow(q, "red");
-        q.isNew = false;
+        flashRow(sellQuotes.value[i], "red");
+        sellQuotes.value[i].isNew = false;
       }
     });
-  },
-  { deep: true }
+  }
 );
 
 watch(
-  buyQuotes,
+  () => buyQuotes.value.map((q) => ({ isNew: q.isNew, price: q.price })),
   (list) => {
-    list.forEach((q) => {
+    list.forEach((q, i) => {
       if (q.isNew) {
-        flashRow(q, "green");
-        q.isNew = false;
+        flashRow(buyQuotes.value[i], "green");
+        buyQuotes.value[i].isNew = false;
       }
     });
-  },
-  { deep: true }
+  }
 );
 </script>
 
@@ -73,25 +85,24 @@ watch(
 
     <div class="flex flex-col mb-2">
       <div class="grid grid-cols-3 p-2 text-textSecondary font-bold">
-        <div>Price&nbsp;(USD)</div>
+        <div>Price (USD)</div>
         <div class="text-right">Size</div>
         <div class="text-right">Total</div>
       </div>
 
       <div
-        v-for="(q, i) in [...sellQuotes].reverse()"
+        v-for="(q, i) in sellQuotes"
         :key="`sell-${i}`"
         class="relative py-1 pr-2 transition-colors duration-300 overflow-hidden"
         :class="[
           hoveredRow === `sell-${i}` && 'bg-hover',
           q.flashColor === 'red' && 'animate-flash-red',
-          q.isChanged && 'animate-pulse',
         ]"
         @mouseover="hoveredRow = `sell-${i}`"
         @mouseleave="hoveredRow = null"
       >
         <div
-          class="pointer-events-none absolute inset-y-0 right-0 bg-red-500/10"
+          class="pointer-events-none absolute inset-y-0 right-0 bg-sellBar"
           :style="{ width: q.percent * 100 + '%' }"
         ></div>
 
@@ -123,13 +134,12 @@ watch(
         :class="[
           hoveredRow === `buy-${i}` && 'bg-hover',
           q.flashColor === 'green' && 'animate-flash-green',
-          q.isChanged && 'animate-pulse',
         ]"
         @mouseover="hoveredRow = `buy-${i}`"
         @mouseleave="hoveredRow = null"
       >
         <div
-          class="pointer-events-none absolute inset-y-0 right-0 bg-green-500/10"
+          class="pointer-events-none absolute inset-y-0 right-0 bg-buyBar"
           :style="{ width: q.percent * 100 + '%' }"
         ></div>
 

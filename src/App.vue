@@ -4,7 +4,7 @@ import OrderBook from "./components/OrderBook.vue";
 
 <template>
   <main class="bg-deep flex justify-center">
-    <OrderBook />
+    <OrderBook symbol="BTCPFC" />
   </main>
 </template>
 
