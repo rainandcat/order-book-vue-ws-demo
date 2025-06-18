@@ -17,7 +17,10 @@
 
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { throttle } from 'lodash';
+import { buildQuoteVM } from './useOrderBookViewModel';
+
 import { getOrderTopic, getTradeTopic } from '@/utils/wsTopics.js';
+import { createWsChannel } from '@/utils/createWsChannel.js';
 
 import {
   ORDER_BOOK_DEPTH,
@@ -41,22 +44,20 @@ export function useOrderBook(options = {}) {
   /** @type {import('vue').Ref<number>} */
   const previousLastPrice = ref(0);
 
-  let orderSocket = null;
-  let tradeSocket = null;
-  let lastSeq = 0;
+  let orderChannel = null;
+  let tradeChannel = null;
+  // let lastSeq = 0;
   let rawSell = [];
   let rawBuy = [];
   let updateFrame = null;
-  let reconnectAttempts = 0;
+  // let reconnectAttempts = 0;
 
   const orderWsUrl = import.meta.env.VITE_ORDER_WS_URL;
   const tradeWsUrl = import.meta.env.VITE_TRADE_WS_URL;
 
   const throttledUpdate = throttle(() => {
-    const nextSell = buildSide(sellQuotes.value, rawSell, false);
-    const nextBuy = buildSide(buyQuotes.value, rawBuy, true);
-    sellQuotes.value = applyDiff(sellQuotes.value, nextSell);
-    buyQuotes.value = applyDiff(buyQuotes.value, nextBuy);
+    sellQuotes.value = applyDiff(sellQuotes.value, buildQuoteVM(rawSell, sellQuotes.value, false));
+    buyQuotes.value  = applyDiff(buyQuotes.value,  buildQuoteVM(rawBuy,  buyQuotes.value, true));
     updateFrame = null;
   }, ORDER_UPDATE_THROTTLE_MS);
 
@@ -70,44 +71,6 @@ export function useOrderBook(options = {}) {
     return sideArr
       .filter(([p, s]) => typeof p === 'string' && typeof s === 'string' && !isNaN(p) && !isNaN(s))
       .map(([p, s]) => [Number(p), Number(s)]);
-  };
-
-  /**
-   * @param {QuoteVM[]} prev
-   * @param {[number, number][]} raw
-   * @param {boolean} isBuy
-   * @returns {QuoteVM[]}
-   */
-  const buildSide = (prev, raw, isBuy) => {
-    const filtered = [...raw].filter(([, size]) => size > 0);
-    const sorted = filtered.sort((a, b) => (isBuy ? b[0] - a[0] : a[0] - b[0]));
-    const fullTotalSize = sorted.reduce((sum, [, size]) => sum + size, 0);
-    const padded = sorted.slice(0, ORDER_BOOK_DEPTH);
-    while (padded.length < ORDER_BOOK_DEPTH) padded.push([0, 0]);
-
-    const totalSize = padded.reduce((sum, [, size]) => sum + size, 0);
-    let running = 0;
-    return padded.map(([price, size]) => {
-      running += size;
-      const existed = prev.find((q) => q.price === price);
-      const sizeChange = existed
-        ? size > existed.size
-          ? 'increase'
-          : size < existed.size
-          ? 'decrease'
-          : null
-        : null;
-
-      return {
-        price,
-        size,
-        total: running,
-        percent: fullTotalSize > 0 ? running / fullTotalSize : 0,
-        isNew: !existed,
-        isChanged: !!existed && existed.size !== size,
-        sizeChange,
-      };
-    });
   };
 
   const applyDiff = (prev, next) => {
@@ -133,99 +96,40 @@ export function useOrderBook(options = {}) {
 
   const connectOrderWS = () => {
     if (!orderWsUrl) throw new Error('VITE_ORDER_WS_URL not defined');
-    orderSocket = new WebSocket(orderWsUrl);
 
-    orderSocket.addEventListener('open', () => {
-      reconnectAttempts = 0;
-      orderSocket.send(JSON.stringify({ op: 'subscribe', args: [orderTopic] }));
-    });
-
-    orderSocket.addEventListener('message', (evt) => {
-      try {
-        const msg = JSON.parse(evt.data || '{}');
-        if (msg.topic !== orderTopic) return;
-
-        const payload = msg.data;
-        if (!payload) return;
-
-        if (payload.type === 'snapshot') {
-          lastSeq = payload.seqNum;
-          rawSell = normalizeSide(payload?.asks || []);
-          rawBuy = normalizeSide(payload?.bids || []);
+    orderChannel = createWsChannel({
+      url: orderWsUrl,
+      topic: orderTopic,
+      onMessage: (data) => {
+        if (data.type === 'snapshot') {
+          rawSell = normalizeSide(data?.asks || []);
+          rawBuy = normalizeSide(data?.bids || []);
           cleanupRawData();
           scheduleUpdate();
-        } else if (payload.type === 'delta') {
-          if (payload.prevSeqNum !== lastSeq) {
-            reconnectOrderWS();
-            return;
-          }
-          lastSeq = payload.seqNum;
-          rawSell = mergeDeltas(rawSell, normalizeSide(payload?.asks || []), false);
-          rawBuy = mergeDeltas(rawBuy, normalizeSide(payload?.bids || []), true);
+        } else if (data.type === 'delta') {
+          rawSell = mergeDeltas(rawSell, normalizeSide(data?.asks || []), false);
+          rawBuy = mergeDeltas(rawBuy, normalizeSide(data?.bids || []), true);
           cleanupRawData();
           scheduleUpdate();
         }
-      } catch (e) {
-        console.error('Order WS error:', e);
-        reconnectOrderWS();
       }
     });
-
-    orderSocket.addEventListener('error', () => {
-      reconnectOrderWS();
-    });
-
-    orderSocket.addEventListener('close', () => {
-      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        setTimeout(connectOrderWS, BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts));
-        reconnectAttempts++;
-      }
-    });
-  };
-
-  const reconnectOrderWS = () => {
-    if (orderSocket) orderSocket.close();
-    connectOrderWS();
   };
 
   const connectTradeWS = () => {
     if (!tradeWsUrl) throw new Error('VITE_TRADE_WS_URL not defined');
-    tradeSocket = new WebSocket(tradeWsUrl);
 
-    tradeSocket.addEventListener('open', () => {
-      reconnectAttempts = 0;
-      tradeSocket.send(JSON.stringify({ op: 'subscribe', args: [tradeTopic] }));
-    });
-
-    tradeSocket.addEventListener('message', (evt) => {
-      try {
-        const msg = JSON.parse(evt.data || '{}');
-        if (msg.topic !== 'tradeHistoryApi') return;
-        const price = Number(msg.data?.[0]?.price);
+    tradeChannel = createWsChannel({
+      url: tradeWsUrl,
+      topic: tradeTopic,
+      shouldHandleMessage: (incomingTopic) =>incomingTopic === 'tradeHistoryApi',
+      onMessage: (data) => {
+        const price = Number(data?.[0]?.price);
         if (!price) return;
         previousLastPrice.value = lastPrice.value;
         lastPrice.value = price;
-      } catch (e) {
-        console.error('Trade WS error:', e);
-        reconnectTradeWS();
       }
     });
-
-    tradeSocket.addEventListener('error', () => {
-      reconnectTradeWS();
-    });
-
-    tradeSocket.addEventListener('close', () => {
-      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        setTimeout(connectTradeWS, BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts));
-        reconnectAttempts++;
-      }
-    });
-  };
-
-  const reconnectTradeWS = () => {
-    if (tradeSocket) tradeSocket.close();
-    connectTradeWS();
   };
 
   onMounted(() => {
@@ -234,8 +138,8 @@ export function useOrderBook(options = {}) {
   });
 
   onBeforeUnmount(() => {
-    orderSocket?.close();
-    tradeSocket?.close();
+    orderChannel?.close();
+    tradeChannel?.close();
     if (updateFrame) cancelAnimationFrame(updateFrame);
     throttledUpdate.cancel();
   });
