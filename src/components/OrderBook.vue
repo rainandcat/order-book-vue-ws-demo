@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, nextTick } from "vue";
 import { useOrderBook } from "@/composables/useOrderBook";
+import { useOrderBookFormat } from "@/composables/useOrderBookFormat";
 import IconArrowDown from "@/assets/IconArrowDown.svg?component";
 
 import { FLASH_DURATION_MS } from "@/constants/orderBook.js";
@@ -17,6 +18,8 @@ const { sellQuotes, buyQuotes, lastPrice, previousLastPrice } = useOrderBook({
 });
 const hoveredRow = ref(null);
 
+const { formatPrice, formatNumber, sizeCellClass } = useOrderBookFormat();
+
 const lastPriceClass = computed(() => {
   if (lastPrice.value > previousLastPrice.value)
     return ["text-buy", "bg-buyBar"];
@@ -28,23 +31,8 @@ const isPriceUp = computed(() => lastPrice.value > previousLastPrice.value);
 const isPriceDown = computed(() => lastPrice.value < previousLastPrice.value);
 const lastPriceDisplay = computed(() => lastPrice.value.toLocaleString());
 
-const formatPrice = (p) =>
-  p.toLocaleString(undefined, {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
-  });
-const formatNumber = (n) => n.toLocaleString();
-
-const sizeCellClass = (q) => {
-  if (q.sizeChange === "increase") return "animate-flash-green text-right";
-  if (q.sizeChange === "decrease") return "animate-flash-red text-right";
-  return "text-right";
-};
-/**
- * @param {QuoteVM} quote
- * @param {'red' | 'green'} color
- */
 function flashRow(quote, color) {
+  if (quote.flashColor) return;
   quote.flashColor = color;
   nextTick(() =>
     setTimeout(() => {

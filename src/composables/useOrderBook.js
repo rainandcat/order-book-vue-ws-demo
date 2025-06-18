@@ -23,35 +23,27 @@ import { getOrderTopic, getTradeTopic } from '@/utils/wsTopics.js';
 import { createWsChannel } from '@/utils/createWsChannel.js';
 
 import {
-  ORDER_BOOK_DEPTH,
   MAX_RAW_QUOTES,
   ORDER_UPDATE_THROTTLE_MS,
-  MAX_RECONNECT_ATTEMPTS,
-  BASE_RECONNECT_DELAY,
 } from '@/constants/orderBook.js';
 
 export function useOrderBook(options = {}) {
+  const sellQuotes = ref([]);
+  const buyQuotes = ref([]);
+  const lastPrice = ref(0);
+  const previousLastPrice = ref(0);
+
   const symbol = options.symbol || 'BTCPFC';
   const orderTopic = getOrderTopic(symbol);
   const tradeTopic = getTradeTopic(symbol);
 
-  /** @type {import('vue').Ref<QuoteVM[]>} */
-  const sellQuotes = ref([]);
-  /** @type {import('vue').Ref<QuoteVM[]>} */
-  const buyQuotes = ref([]);
-  /** @type {import('vue').Ref<number>} */
-  const lastPrice = ref(0);
-  /** @type {import('vue').Ref<number>} */
-  const previousLastPrice = ref(0);
-
   let orderChannel = null;
   let tradeChannel = null;
-  // let lastSeq = 0;
   let rawSell = [];
   let rawBuy = [];
   let updateFrame = null;
-  // let reconnectAttempts = 0;
 
+  // Load WebSocket URLs from .env variables
   const orderWsUrl = import.meta.env.VITE_ORDER_WS_URL;
   const tradeWsUrl = import.meta.env.VITE_TRADE_WS_URL;
 
@@ -81,12 +73,20 @@ export function useOrderBook(options = {}) {
   };
 
   const mergeDeltas = (prev, updates, isBuy) => {
-    const map = new Map(prev.map(([p, s]) => [p, s]));
-    for (const [p, s] of updates) {
-      if (s === 0) map.delete(p);
-      else map.set(p, s);
+    const priceSizeMap = new Map(prev.map(([price, size]) => [price, size]));
+    
+    for (const [price, size] of updates) {
+      if (size === 0) {
+        priceSizeMap.delete(price);
+      } else {
+        priceSizeMap.set(price, size);
+      }
     }
-    return Array.from(map.entries()).sort((isBuy ? (a, b) => b[0] - a[0] : (a, b) => a[0] - b[0]));
+
+    return Array.from(priceSizeMap.entries()).sort((a, b) => {
+      const [priceA, priceB] = [a[0], b[0]];
+      return isBuy ? priceB - priceA : priceA - priceB;
+    });
   };
 
   const cleanupRawData = () => {
@@ -122,7 +122,7 @@ export function useOrderBook(options = {}) {
     tradeChannel = createWsChannel({
       url: tradeWsUrl,
       topic: tradeTopic,
-      shouldHandleMessage: (incomingTopic) =>incomingTopic === 'tradeHistoryApi',
+      extraFunc: (incomingTopic) =>incomingTopic === 'tradeHistoryApi',
       onMessage: (data) => {
         const price = Number(data?.[0]?.price);
         if (!price) return;
@@ -140,8 +140,6 @@ export function useOrderBook(options = {}) {
   onBeforeUnmount(() => {
     orderChannel?.close();
     tradeChannel?.close();
-    if (updateFrame) cancelAnimationFrame(updateFrame);
-    throttledUpdate.cancel();
   });
 
   return { sellQuotes, buyQuotes, lastPrice, previousLastPrice };

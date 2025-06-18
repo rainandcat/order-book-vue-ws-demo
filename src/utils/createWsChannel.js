@@ -1,6 +1,6 @@
 import {
-  BASE_RECONNECT_DELAY,
-  MAX_RECONNECT_ATTEMPTS
+  WS_RETRY_DELAY_BASE,
+  MAX_RECONNECT_NUM
 } from '@/constants/orderBook.js';
 
 /**
@@ -9,34 +9,34 @@ import {
  * @param {string} opts.url
  * @param {string} opts.topic
  * @param {(msg: any) => void} opts.onMessage
- * @param {(topic: string) => boolean} [opts.shouldHandleMessage] - optional topic filter 
+ * @param {(topic: string) => boolean} [opts.extraFunc]
  * @returns {{ close: () => void }}
  */
 
-export function createWsChannel({ url, topic, onMessage, shouldHandleMessage }) {
+export function createWsChannel({ url, topic, onMessage, extraFunc }) {
   let socket = null;
-  let attempts = 0;
+  let retryCount = 0;
 
   const connect = () => {
     socket = new WebSocket(url);
 
     socket.addEventListener('open', () => {
-      attempts = 0;
+      retryCount = 0;
       socket.send(JSON.stringify({ op: 'subscribe', args: [topic] }));
     });
 
-    socket.addEventListener('message', (evt) => {
+    socket.addEventListener('message', (event) => {
       try {
-        const msg = JSON.parse(evt.data || '{}');
-        const isMatch = shouldHandleMessage
-          ? shouldHandleMessage(msg.topic)
+        const msg = JSON.parse(event.data || '{}');
+        const isMatch = extraFunc
+          ? extraFunc(msg.topic)
           : msg.topic === topic;
 
         if (isMatch && msg.data) {
           onMessage(msg.data, msg);
         }
       } catch (e) {
-        console.error('[WS message parse error]', e);
+        console.log('[WS message parse error]', e);
       }
     });
 
@@ -45,9 +45,9 @@ export function createWsChannel({ url, topic, onMessage, shouldHandleMessage }) 
   };
 
   const reconnect = () => {
-    if (attempts >= MAX_RECONNECT_ATTEMPTS) return;
-    setTimeout(connect, BASE_RECONNECT_DELAY * Math.pow(2, attempts));
-    attempts++;
+    if (retryCount >= MAX_RECONNECT_NUM) return;
+    setTimeout(connect, WS_RETRY_DELAY_BASE * Math.pow(2, retryCount));
+    retryCount++;
   };
 
   const close = () => socket?.close();
