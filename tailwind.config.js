@@ -18,6 +18,20 @@ module.exports = {
         flashGreen: 'rgba(0, 177, 93, 0.5)',
         flashRed: 'rgba(255, 91, 90, 0.5)',
       },
+      keyframes: {
+        'flash-red': {
+          '0%':  { backgroundColor: 'rgba(239, 68, 68, 0.5)' },
+          '100%':{ backgroundColor: 'transparent' },
+        },
+        'flash-green': {
+          '0%':  { backgroundColor: 'rgba(34, 197, 94, 0.5)' },
+          '100%':{ backgroundColor: 'transparent' },
+        },
+      },
+      animation: {
+        'flash-red':   'flash-red 1.5s ease-out forwards',
+        'flash-green': 'flash-green 1.5s ease-out forwards',
+      },
     },
   },
   plugins: [],
