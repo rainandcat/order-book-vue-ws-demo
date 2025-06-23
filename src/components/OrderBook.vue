@@ -79,7 +79,7 @@ watch(
       </div>
 
       <div
-        v-for="(q, i) in sellQuotes"
+        v-for="(q, i) in sellQuotes.slice().reverse()"
         :key="`sell-${i}`"
         class="relative py-1 pr-2 transition-colors duration-300 overflow-hidden"
         :class="[

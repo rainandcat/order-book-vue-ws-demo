@@ -8,7 +8,7 @@ export const MAX_RAW_QUOTES = 50;
 export const FLASH_DURATION_MS = 1500;
 
 // Throttle interval (ms) for order updates
-export const ORDER_UPDATE_THROTTLE_MS = 250;
+export const ORDER_UPDATE_THROTTLE_MS = 100;
 
 // Max number of WebSocket reconnect attempts
 export const MAX_RECONNECT_NUM = 5;
