@@ -16,7 +16,6 @@
  */
 
 import { ref, onMounted, onBeforeUnmount } from 'vue';
-import { throttle } from 'lodash';
 import { buildQuoteVM } from './useOrderBookViewModel';
 
 import { getOrderTopic, getTradeTopic } from '@/utils/wsTopics.js';
@@ -24,7 +23,6 @@ import { createWsChannel } from '@/utils/createWsChannel.js';
 
 import {
   MAX_RAW_QUOTES,
-  ORDER_UPDATE_THROTTLE_MS,
 } from '@/constants/orderBook.js';
 
 export function useOrderBook(options = {}) {
@@ -47,15 +45,15 @@ export function useOrderBook(options = {}) {
   const orderWsUrl = import.meta.env.VITE_ORDER_WS_URL;
   const tradeWsUrl = import.meta.env.VITE_TRADE_WS_URL;
 
-  const throttledUpdate = throttle(() => {
+  const update = () => {
     sellQuotes.value = applyDiff(sellQuotes.value, buildQuoteVM(rawSell, sellQuotes.value, false));
     buyQuotes.value  = applyDiff(buyQuotes.value,  buildQuoteVM(rawBuy,  buyQuotes.value, true));
     updateFrame = null;
-  }, ORDER_UPDATE_THROTTLE_MS);
+  };
 
   const scheduleUpdate = () => {
     if (updateFrame) return;
-    updateFrame = requestAnimationFrame(throttledUpdate);
+    updateFrame = requestAnimationFrame(update);
   };
 
   const normalizeSide = (sideArr) => {

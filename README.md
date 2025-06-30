@@ -12,7 +12,6 @@ A high-performance real-time Order Book component built with **Vue 3**, **Vite**
 - Vite
 - Tailwind CSS
 - WebSocket
-- Throttle (lodash)
 - GitHub + Vercel
 
 ## Project Structure
